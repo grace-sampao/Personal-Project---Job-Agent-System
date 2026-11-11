@@ -166,7 +166,8 @@ def application_writer_node(state: JobSearchState) -> Dict[str, Any]:
 # 5. LangGraph Workflow Construction
 def create_job_search_graph():
     """
-    Assembles and compiles the two-agent LangGraph system with checkpointing.
+    Assembles and compiles the two-agent LangGraph system with checkpointing and 
+    a native interrupt before Agent 2 (Checkpoint 1).
     """
     workflow = StateGraph(JobSearchState)
 
@@ -181,6 +182,10 @@ def create_job_search_graph():
 
     # Memory Checkpointer enables state saving across human-in-the-loop interactions
     memory = MemorySaver()
-    app = workflow.compile(checkpointer=memory)
+
+    # interrupt_before pauses the graph right before running application_writer
+    app = workflow.compile(
+        checkpointer=memory, interrupt_before=["application_writer"]
+    )
 
     return app
