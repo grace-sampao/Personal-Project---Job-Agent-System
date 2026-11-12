@@ -137,18 +137,14 @@ if searched_jobs and not applications:
 # Checkpoint 2: Application Review & Manual Submission UI
 if applications:
     st.markdown("---")
-    st.header("🛑 Human-in-the-Loop Checkpoint #2: Review Drafted Applications")
-    st.markdown("Here are the custom application responses drafted by Agent 2. Review them, copy the text and submit your applications manually.")
+    st.header("🛑 Human-in-the-Loop Checkpoint #2: Review Drafted Application Packages")
+    st.markdown("Here are the custom cover letters and optimized resume bullets drafted by Agent 2. Review them, copy the text into your application materials and submit manually.")
 
-    for job_title, cover_letter in applications.items():
-        with st.expander(f"📝 Application Draft: {job_title}", expanded=True):
-            st.text_area(
-                "Generated Cover Letter / Rationale",
-                value=cover_letter,
-                height=300,
-                key=f"app_{job_title}"
-            )
-            st.markdown("*(Copy the text above, open the job posting link and submit your application manually).*")
+    for job_title, app_content in applications.items():
+        with st.expander(f"📝 Application Package: {job_title}", expanded=True):
+            st.markdown(app_content)
+            st.markdown("---")
+            st.markdown("*(Copy the relevant sections above, open the job posting link and submit your application manually).*")
 
     if st.button("🔄 Reset & Start New Search"):
         # Clear thread state or implement thread ID for a fresh session
