@@ -56,10 +56,14 @@ def job_searcher_node(state: JobSearchState) -> Dict[str, Any]:
     search_results = tavily.search(
         query=f"{query} remote",
         include_domains=[
-            # "linkedin.com/jobs",
+            "linkedin.com/jobs",
             "boards.greenhouse.io",
             "lever.co",
-            "jobs.ashbyhq.com"
+            "jobs.ashbyhq.com",
+            "himalayas.app/jobs",
+            "wellfound.com/remote",
+            "weworkremotely.com/remote-jobs",
+            "remotive.com/remote-jobs/l-worldwide",
         ],
         search_depth="advanced",
         max_results=10,
