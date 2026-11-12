@@ -2,6 +2,7 @@ import operator
 from typing import Annotated, List, Dict, Any, TypedDict
 import os
 from pydantic import BaseModel, Field
+import json
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from langgraph.graph import StateGraph, START, END
@@ -26,21 +27,20 @@ class JobListResponse(BaseModel):
 class JobSearchState(TypedDict):
     resume_text: str
     target_role_query: str
-    searched_jobs: List[Dict[str, Any]]         # Jobs found by Tavily + evaluated by DeepSeek
-    selected_jobs: List[Dict[str, Any]]         # Jobs approved by user (Human-in-the-loop 1)
-    applications: Dict[str, str]                # Generated cover letters/answers (Human-in-the-loop 2)
+    searched_jobs: List[Dict[str, Any]]         # Found by Agent 1
+    selected_jobs: List[Dict[str, Any]]         # Selected at Checkpoint 1 (Human-in-the-loop 1)
+    applications: Dict[str, str]                # Drafted by Agent 2 at Checkpoint 2 (Human-in-the-loop 2)
     messages: Annotated[List[Any], operator.add]
 
 # 3. Agent 1: The Job Searcher
 def job_searcher_node(state: JobSearchState) -> Dict[str, Any]:
     """
-    Agent 1: Searches remote job boards via Tavily, evaluates listings against 
-    the user's resume using DeepSeek structured outputs and returns filtered matches.
+    Agent 1: Searches remote job platforms using Tavily's native domain filtering, evaluates matches against CV using DeepSeek with manual JSON parsing and saves them to state.
     """
     resume = state["resume_text"]
     query = state.get(
         "target_role_query",
-        "remote AI engineer python jobs posted in the last 24 hours"
+        "remote AI engineer python jobs"
     )
 
     # Initialize Tavily
@@ -52,11 +52,11 @@ def job_searcher_node(state: JobSearchState) -> Dict[str, Any]:
 
     tavily = TavilyClient(api_key=tavily_api_key)
 
-    # Execute Tavily search specifically targeting recent remote job posts
+    # Using Tavily native domain filtering
     search_results = tavily.search(
         query=f"{query} remote",
         include_domains=[
-            "linkedin.com/jobs",
+            # "linkedin.com/jobs",
             "boards.greenhouse.io",
             "lever.co",
             "jobs.ashbyhq.com"
@@ -69,18 +69,34 @@ def job_searcher_node(state: JobSearchState) -> Dict[str, Any]:
     # Format search results for DeepSeek evaluation
     context_listings = ""
     for idx, res in enumerate(search_results.get("results", [])):
-        context_listings += f"\n[{idx}] Title/Snippet: {res.get('title')}\nURL: {res.get('url')}\nContent: {res.get('content')}\n"
+        context_listings += (
+            f"\n[{idx}] Title/Snippet: {res.get('title')}\n"
+            f"URL: {res.get('url')}\n"
+            f"Content: {res.get('content')}\n"
+        )
 
     # Prompt DeepSeek to filter and score matches against the user's CV
     llm = get_deepseek_llm(temperature=0.1)
-    structured_llm = llm.with_structured_output(JobListResponse)
 
-    system_prompt = """You are an expert technical recruiter and AI career agent. 
-    Analyze the provided candidate CV and evaluate the scraped job listings. Select 
-    only jobs that were posted recently, are remote from anywhere in the world and 
-    closely match the candidate's technical stack. Return a structured list of 
-    matching jobs with a match score (0-100) and rationale.
-    """
+    system_prompt = """
+    You are an expert technical recruiter and career strategist.
+    Analyze the provided candidate CV and evaluate the scraped job listings.
+    Select remote jobs matching the candidate's core skill set.
+    You MUST return your response strictly as a JSON object matching this exact schema:
+    {
+        "jobs": [
+            {
+                "title": "string",
+                "company": "string",
+                "url": "string",
+                "match_score": 0-100 (integer),
+                "rationale": "string"
+            }
+        ]
+    }
+Do not include any markdown code blocks (like ```json) or extra text. Output raw 
+JSON only.
+"""
 
     user_prompt = f"""
     CANDIDATE CV:
@@ -89,28 +105,47 @@ def job_searcher_node(state: JobSearchState) -> Dict[str, Any]:
     SCRAPPED JOB LISTINGS:
     {context_listings}
 
-    Evaluate these listings and return the best matches according to your instructions.
+    Evaluate these listings and return the JSON response.
     """
 
-    response = structured_llm.invoke([
+    response = llm.invoke([
         SystemMessage(content=system_prompt),
-        HumanMessage(content=user_prompt)
+        HumanMessage(content=user_prompt),
     ])
 
-    # Convert Pydantic models back to dicts for state serialization
-    formatted_jobs = [job.model_dump() for job in response.jobs]
+    # Clean up response content in case the model wrapped it in markdown code blocks
+    raw_content = response.content.strip()
+    
+    if raw_content.startswith("```json"):
+        raw_content = raw_content[7:]
+    elif raw_content.startswith("```"):
+        raw_content = raw_content[3:]
+
+    if raw_content.endswith("```"):
+        raw_content = raw_content[:-3]
+
+    raw_content = raw_content.strip()
+
+    # Parse and validate with Pydantic
+    try:
+        parsed_response = JobListResponse.model_validate_json(raw_content)
+        formatted_jobs = [job.model_dump() for job in parsed_response.jobs]
+    except Exception as e:
+        # Fallback or empty list of JSON parsing fails
+        print(f"JSON parsing error: {e}, Raw content was: {raw_content}")
+        formatted_jobs = []
 
     return {
         "searched_jobs": formatted_jobs,
         "messages": [HumanMessage(
-            content=f"Agent 1 found {len(formatted_jobs)} potential matching jobs."
+            content=f"Agent 1 identified {len(formatted_jobs)} potential matching jobs."
         )]
     }
 
 # 4. Agent 2: The Application Writer Node
 def application_writer_node(state: JobSearchState) -> Dict[str, Any]:
     """
-    Agent 2: Takes human-selected jobs from Checkpoint 1 and crafts tailored cover letters and application write-ups based on the candidate's CV.
+    Agent 2: Takes human-selected jobs from Checkpoint 1 and crafts both tailored cover letters and optimized resume bullet points based on the candidate's CV.
     """
     resume = state["resume_text"]
     selected_jobs = state.get("selected_jobs", [])
@@ -123,15 +158,20 @@ def application_writer_node(state: JobSearchState) -> Dict[str, Any]:
             )],
         }
 
-    llm = get_deepseek_llm(temperature=0.4)         # Slightly higher temperature for creative writing
+    llm = get_deepseek_llm(temperature=0.3)
     generated_applications: Dict[str, str] = {}
 
-    system_prompt = """You are an elite executive career coach and technical 
-    writer. Tailor the candidate's CV and draft a compelling, concise and highly 
-    tailored cover letter / application rationale for the job listing based on 
-    the candidate's CV. Focus on demonstrating clear impact, matching core skills 
-    and highlighting specific engineering capabities. Keep the tone professional 
-    and direct.
+    system_prompt = """
+    You are an elite executive career coach, technical resume writer and career strategist.
+    For each selected job listing, you must generate two deliverables based on the candidate's CV:
+    1. Tailored resume bullet points and key skill highlights optimized specifically to match the job description's requirements.
+    2. A compelling, tailored cover letter.
+    
+    Format your output clearly using Markdown headings:
+    ### Tailored Resume Highlights & Bullet Points
+    [Optimized resume bullet points and keywords here]
+    ### Cover Letter
+    [Cover letter text here]
     """
 
     for job in selected_jobs:
@@ -146,7 +186,7 @@ def application_writer_node(state: JobSearchState) -> Dict[str, Any]:
         URL: {job.get('url')}
         Match Rationale: {job.get('rationale')}
 
-        Generate a high-impact custom resume and cover letter for this position.
+        Generate the optimized resume bullet points and tailored cover letter for this position.
         """
 
         response = llm.invoke([
@@ -159,7 +199,7 @@ def application_writer_node(state: JobSearchState) -> Dict[str, Any]:
     return {
         "applications": generated_applications,
         "messages": [HumanMessage(
-            content=f"Agent 2 drafted applications for {len(generated_applications)} selected roles."
+            content=f"Agent 2 drafted application packages (Cover Letter + Resume Bullets) for {len(generated_applications)} selected roles."
         )],
     }
 
