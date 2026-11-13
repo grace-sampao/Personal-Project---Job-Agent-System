@@ -15,12 +15,10 @@ st.set_page_config(
 
 # Initialize Session State variables for tracking workflow stage
 if "graph" not in st.session_state:
-    st.session_state.graph = create_job_search_graph()
+    st.session_state.graph = create_job_search_graph("job_sessions.sqlite")
 
-if "thread_config" not in st.session_state:
-    st.session_state.thread_config = {
-        "configurable": {"thread_id": "user_job_session_1"}
-    }
+if "thread_id" not in st.session_state:
+    st.session_state.thread_id = "default_session"
 
 st.title("💼 Autonomous Multi-Agent Job Search & Application Assistant")
 st.markdown(
@@ -31,7 +29,23 @@ st.markdown(
 
 # Sidebar for configuration and inputs
 with st.sidebar:
-    st.header("1. Input Configuration")
+    st.header("1. Session & Input Configuration")
+
+    # Allow switching or resuming specific saved sessions by ID
+    session_input = st.text_input(
+        "Session ID (Use same ID to resume)",
+        value=st.session_state.thread_id
+    )
+
+    if session_input != st.session_state.thread_id:
+        st.session_state.thread_id = session_input
+        st.rerun()
+
+    st.session_state.thread_config = {
+        "configurable": {
+            "thread_id": st.session_state.thread_id
+        }
+    }
 
     # PDF Resume Uploader
     uploaded_file = st.file_uploader("Upload your CV / Resume (PDF)", type=["pdf"])
