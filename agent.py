@@ -2,11 +2,13 @@ import operator
 from typing import Annotated, List, Dict, Any, TypedDict
 import os
 from pydantic import BaseModel, Field
-import json
+# import json
+import sqlite3
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from langgraph.graph import StateGraph, START, END
-from langgraph.checkpoint.memory import MemorySaver
+from langgraph.checkpoint.sqlite import SqliteSaver
+# from langgraph.checkpoint.memory import MemorySaver
 from tavily import TavilyClient
 
 from utils import get_deepseek_llm
@@ -64,6 +66,7 @@ def job_searcher_node(state: JobSearchState) -> Dict[str, Any]:
             "wellfound.com/remote",
             "weworkremotely.com/remote-jobs",
             "remotive.com/remote-jobs/l-worldwide",
+            "jobs.80000hours.org/",
         ],
         search_depth="advanced",
         max_results=10,
@@ -207,11 +210,11 @@ def application_writer_node(state: JobSearchState) -> Dict[str, Any]:
         )],
     }
 
-# 5. LangGraph Workflow Construction
-def create_job_search_graph():
+# 5. LangGraph Workflow Construction (with SQLite Persistence)
+def create_job_search_graph(db_path: str = "job_sessions.sqlite"):
     """
-    Assembles and compiles the two-agent LangGraph system with checkpointing and 
-    a native interrupt before Agent 2 (Checkpoint 1).
+    Assembles and compiles the two-agent LangGraph system with persistent SQLite 
+    checkpointing and a native interrupt before Agent 2 (Checkpoint 1).
     """
     workflow = StateGraph(JobSearchState)
 
@@ -224,8 +227,9 @@ def create_job_search_graph():
     workflow.add_edge("job_searcher", "application_writer")
     workflow.add_edge("application_writer", END)
 
-    # Memory Checkpointer enables state saving across human-in-the-loop interactions
-    memory = MemorySaver()
+    # Open a persistent SQLite connection safe for Streamlit's multi-threaded reruns
+    conn = sqlite3.connect(db_path, check_same_thread=False)
+    memory = SqliteSaver(conn)
 
     # interrupt_before pauses the graph right before running application_writer
     app = workflow.compile(
