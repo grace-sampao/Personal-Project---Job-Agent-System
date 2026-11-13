@@ -11,3 +11,7 @@ build/
 dist/
 wheels/
 *.egg-info
+
+# Database files
+*.sqlite
+*.sqlite-*
